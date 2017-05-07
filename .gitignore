@@ -1,0 +1,9 @@
+data/
+! data/sample_image.jpg
+metastore_db/
+.ipynb_checkpoints/
+**/*.pyc
+
+
+derby.log
+temp_photo.jpg
