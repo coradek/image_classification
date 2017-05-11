@@ -1,114 +1,186 @@
 import os
-import sys # needed?
+import re
+import cv2
+import tensorflow as tf
+import tensorflow.python.platform
+from tensorflow.python.platform import gfile
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LogisticRegression
-import cPickle as pkl
+import cPickle as pickle
 
-from sklearn.model_selection import train_test_split
-from sklearn.model_selection import cross_val_score
+"""Credit: KERNIX blog - Image classification
+    with a pre-trained deep neural network"""
 
-import cv2
+def create_graph():
+    # (confirm) creates .pb graph file in imagenet directory
+    model_dir = 'imagenet'
+    with gfile.FastGFile(os.path.join(
+            model_dir, 'classify_image_graph_def.pb'), 'rb') as f:
+        graph_def = tf.GraphDef()
+        graph_def.ParseFromString(f.read())
+        _ = tf.import_graph_def(graph_def, name='')
 
-from src import build_data as data
-# from src import LogisticRegression_Multiclass as lrm
-from src import evaluation as ev
 
-class ModelMaker(object):
+def extract_features(image_list):
     """
-    takes path to dir of photos (where sub folders are classes)
-    gets tensorflow features
-    creates and saves df
-    trains logistic model
-    evaluates model
+    INPUT: a list of photo file paths.
+    OUTPUT: numpy array of feature vectors
     """
-    def __init__(self, root_dir, image_directory):
-        # Nested dir: each sub folder is a class
-        self.root = root_dir
-        self.dir = image_directory
-        self.path = os.path.join(self.root, self.dir)
-        self.df = None
-        self.class_labels = None
-        self.y = None
-        self.X = None
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-        self.model = None
-        self.y_pred = None
-        self.y_probas = None
-        self.conf_matrix = None
-        self.perc_matrix = None
-        self.results = None
-        self.missed_preds = None
 
-    def process_images_and_train_model(self, split_state=None):
-        # Todo: make this create df first time run
-        #       and load df if already exists
-        self.df = data.create_df(self.path)
-        # self.df.to_csv('data/training_data.csv')
+    print("commencing feature extraction")
+    nb_features = 2048
+    features = np.empty((len(image_list), nb_features))
+    create_graph()
 
-        df = self.df
-        self.class_labels = np.unique(df.label)
-        self.y = df['label']
-        self.X = df.drop(df.columns[[2048, 2049]], axis=1)
-        self.X_train, self.X_test, self.y_train, self.y_test =\
-             train_test_split(self.X, self.y, test_size=0.3
-                             , random_state=split_state)
+    with tf.Session() as sess:
 
-        # These are all default values
-        # (included incase I want to play with any of them)
-        lr_model = LogisticRegression(penalty='l2', dual=False
-                              , tol=0.0001, C=1.0, fit_intercept=True
-                              , intercept_scaling=1, class_weight=None
-                              , random_state=None, solver='liblinear'
-                              , max_iter=100, multi_class='ovr'
-                              , verbose=0, warm_start=False, n_jobs=-1)
-        self.model = lr_model.fit(self.X_train, self.y_train)
+        next_to_last_tensor = sess.graph.get_tensor_by_name('pool_3:0')
 
-    def get_test_result_dataframe(self):
-        results = pd.DataFrame()
-        results['true_label'] = self.y_test
-        results['prediction'] = self.y_pred
-        col_names = ['proba_'+c for c in self.class_labels]
-        for c, p in zip(col_names, self.y_probas.T):
-            results[c] = p
-        results['file_path'] = self.df.loc[self.y_test.index.tolist()].file_path
-        return results
+        for ind, image in enumerate(image_list):
+            if ind %10 ==0:
+                print("processing image {}: {}".format(ind,image))
+            if not gfile.Exists(image):
+                tf.logging.fatal('File does not exist %s', image)
 
-    def evaluate_model(self):
-        # may not be needed now that self.class_labels is added
-        # labels = sorted(np.unique(self.df.labels))
-        self.y_pred = self.model.predict(self.X_test)
-        self.y_probas = self.model.predict_proba(self.X_test)
+            image_data = gfile.FastGFile(image, 'rb').read()
 
-        self.results = self.get_test_result_dataframe()
-        tru, pred = self.results.true_label, self.results.prediction
-        self.missed_preds = self.results[tru != pred]
+            predictions = sess.run(next_to_last_tensor,
+                                    {'DecodeJpeg/contents:0': image_data})
+            features[ind, :] = np.squeeze(predictions)
+    print("feature extraction complete")
+    return features
 
-        c, p = ev.cm_report(self.y_test, self.y_pred, print_report=False)
-        self.conf_matrix, self.perc_matrix = c, p
 
-    def display_report(self):
-        print("Training set cross validation metrics: ")
-        print("\nLog loss:")
-        print(cross_val_score(self.model, self.X_train, self.y_train
-                              , groups=None, scoring='neg_log_loss'
-                              , cv=None, n_jobs=-1, verbose=0, fit_params=None
-                              , pre_dispatch='2*n_jobs'))
+def create_validation_set(root, num=100):
+    """
+    INPUT: path to project location
+    OUTPUT: test_train and validation directories create
+            image files moved
+    """
+    #TODO: check if '/test_images' exists
+    # if not create '/test_images' and move images from training
+    # else pass
 
-        print("\nAccuracy:")
-        print(cross_val_score(self.model, self.X_train, self.y_train
-                              , groups=None, scoring=None
-                              , cv=None, n_jobs=-1, verbose=0, fit_params=None
-                              , pre_dispatch='2*n_jobs'))
+    # root = "/Users/ophidian/coradek/WorkSpace/AeyesafeMVP/"
+    image_dir = "data/test_train_images/"
+    test_dir = "data/validation_images/"
+    path = os.path.join(root, image_dir)
+    dest = os.path.join(root, test_dir)
 
-        print("\n#########")
-        print("\nTest set metrics:")
-        _, _ = ev.cm_report(self.y_test, self.y_pred)
-        ev.plot_confusion_matrix(self.conf_matrix, classes=self.class_labels,
-                                title='Confusion matrix')
-        ev.plot_confusion_matrix(self.perc_matrix, classes=self.class_labels,
-                                title='Percentage matrix')
+    if not os.path.exists(dest):
+        os.mkdir(dest)
+        labels = []
+        paths = []
+        for p, dirs, files in os.walk(path):
+            for dd in dirs:
+                # get the last 100 images in each class
+                # (consider also get random 100 images from each class)
+                for n, im in enumerate(os.listdir(os.path.join(p,dd))[-num:]):
+                    if im[-4:].lower() == '.jpg':
+                        current = os.path.join(p, dd, im)
+                        new_name = "{}_{}.jpg".format(dd,n+1)
+                        final = os.path.join(dest,new_name)
+                        labels.append(dd)
+                        paths.append(final)
+                        os.rename(current, final)
+        return paths, labels
+
+    else:
+        print "'test_train_images' and 'validation_images' \
+                directories already exist"
+
+
+def create_validation_df(directory):
+    """
+    INPUT: path to '/validation_images'
+    OUTPUT: data frame with 'image_path', 'label', and 2048 tensorflow feature columns
+    """
+    # directory = "/Users/ophidian/coradek/WorkSpace/AeyesafeMVP/data/validation_images"
+    file_list = os.listdir(directory)
+    paths = []
+    labels = []
+    for item in file_list:
+        if item[-4:].lower() == '.jpg':
+            paths.append(os.path.join(directory, item))
+            labels.append(item[:-7])
+
+    features = extract_features(paths)
+    df = pd.DataFrame(features)
+    df['label'] = labels
+    df['file_path'] = paths
+
+    return df
+
+
+def convert_to_jpg(path):
+    """
+    Convert images to .jpg for use in inception-v3
+    """
+    if path[:-4] is not '.jpg':
+        new_name = ''.join(path.split('.')[:-1]) + '.jpg'
+        im =cv2.imread(path)
+        cv2.imwrite(new_name, im)
+        return new_name
+
+
+def get_paths(directory):
+    """
+    INPUT: directory of photos
+    Converts ".png" and ".bmp" to ".jpg"
+    OUTPUT: list of ".jpg" file paths
+    """
+    image_path_list = []
+    for p, dirs, files in os.walk(directory):
+        for ff in files:
+            if ff[-4:].lower() == '.jpg':
+                file_path = os.path.join(p,ff)
+                image_path_list.append(file_path)
+            elif (ff[-4:].lower() == '.png') or (ff[-4:].lower() == '.bmp'):
+                file_path = os.path.join(p,ff)
+                file_path = convert_to_jpg(file_path)
+                image_path_list.append(file_path)
+            else:
+                print("file - {} - not processed.\
+                 \nnon-image file or format not supported".format(ff))
+    return image_path_list
+
+
+def get_labels(image_list):
+    """
+    INPUT: list of '.jpg' file paths where each class of images
+           is in its own subdirectory
+    OUTPUT: list of labels
+    """
+    labels = []
+    for item in image_list:
+        labels.append(item.split(os.path.sep)[-2])
+    return labels
+
+
+def create_df(directory):
+    """
+    INPUT: directory containing subdirectories named according to the
+           class label of the contained images
+    OUTPUT: data frame with 'image_path', 'label', and 2048 feature columns
+    """
+    print("creating dataframe")
+    path_list = get_paths(directory)
+    labels = get_labels(path_list)
+    features = extract_features(path_list)
+    df = pd.DataFrame(features)
+    df['label'] = labels
+    df['file_path'] = path_list
+    print("dataframe complete")
+    return df
+
+
+def main():
+    # TODO:
+    # inform of process, ask before proceeding
+    # separate validation data
+    # create and save training and validation dataframes
+    pass
+
+
+if __name__ == '__main__':
+    main()
