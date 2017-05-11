@@ -10,6 +10,12 @@ Code to support my general process for creating an image classification models
 
 
 TODO:
-add option to separate validation set
+
+add support for .png and .bmp
+
 add ability to pass different classifiers to ModelMaker
 build in ability to save the model
+add option to separate validation set
+
+for generalizeability:
+change method names to transform() ->[preprocessing and dataframe creation], fit() ->[test-train split crossval and fit ML model], predict()/evaluate()
